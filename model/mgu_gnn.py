@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from torch.nn import Module, Parameter
 import torch.nn.functional as F
-
+from model.attention_module import AttentionModule
 from model.fusion import CrossModalFusion
 
 def build_graph(train_data):
@@ -147,11 +147,7 @@ class SessionGraph(Module):
         self.register_buffer('item_image_features', precomputed_img_features) 
 
         self.gnn = GNN(self.hidden_size, step=opt.step)
-        self.linear_one = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
-        self.linear_two = nn.Linear(self.hidden_size, self.hidden_size, bias=True)
-        self.linear_three = nn.Linear(self.hidden_size, 1, bias=False)
-        self.linear_transform = nn.Linear(self.hidden_size * 2, self.hidden_size, bias=True)
-        self.linear_t = nn.Linear(self.hidden_size, self.hidden_size, bias=False)  
+        self.attention = AttentionModule(self.hidden_size)
         self.loss_function = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(self.parameters(), lr=opt.lr, weight_decay=opt.l2)
         self.scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=opt.lr_dc_step, gamma=opt.lr_dc)
@@ -163,20 +159,9 @@ class SessionGraph(Module):
             weight.data.uniform_(-stdv, stdv)
             
     def compute_scores(self, hidden, mask):
-        ht = hidden[torch.arange(mask.shape[0]).long(), torch.sum(mask, 1) - 1]  
-        q1 = self.linear_one(ht).view(ht.shape[0], 1, ht.shape[1])  
-        q2 = self.linear_two(hidden)  
-        alpha = self.linear_three(torch.sigmoid(q1 + q2))
-        alpha = F.softmax(alpha, 1)
-        a = torch.sum(alpha * hidden * mask.view(mask.shape[0], -1, 1).float(), 1)
-        if not self.nonhybrid:
-            a = self.linear_transform(torch.cat([a, ht], 1))
-            
-        all_items = torch.arange(1, self.n_node).long().to(hidden.device)
-        all_imgs = self.item_image_features[1:self.n_node]
-        b = self.fusion_layer(all_items, all_imgs) 
-        
-        scores = torch.matmul(a, b.transpose(1, 0))
+        item_embeddings = self.fusion_layer.id_embedding.weight[1:]
+        session_repr = self.attention(hidden,mask,item_embeddings)
+        scores = torch.sum(session_repr*item_embeddings,-1)
         return scores
 
     def forward(self, inputs, A):
