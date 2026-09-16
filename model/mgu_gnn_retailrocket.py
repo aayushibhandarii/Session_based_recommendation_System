@@ -6,8 +6,6 @@ from torch import nn
 from torch.nn import Module, Parameter
 import torch.nn.functional as F
 from model.attention_module import AttentionModule
-from model.fusion import CrossModalFusion
-from model.global_graph import GlobalAggregator, GatedFusion
 
 def build_graph(train_data):
     graph = nx.DiGraph()
@@ -133,37 +131,18 @@ class GNN(Module):
     def forward(self, A, hidden):
         for i in range(self.step):
             hidden = self.GNNCell(A, hidden)
-        return hidden
+        return hidden 
 
 class SessionGraph(Module):
-    def __init__(self, opt, n_node, precomputed_img_features,
-                 global_neighbor_idx=None, global_neighbor_weight=None):
+    def __init__(self, opt, n_node):
         super(SessionGraph, self).__init__()
         self.hidden_size = opt.hiddenSize
         self.n_node = n_node
         self.batch_size = opt.batchSize
         self.nonhybrid = opt.nonhybrid
-
-        # --- FUSION LAYER INSTEAD OF PLAIN EMBEDDING ---
-        self.fusion_layer = CrossModalFusion(self.n_node, self.hidden_size, img_feat_dim=768)
-        self.register_buffer('item_image_features', precomputed_img_features)
+        self.embedding = nn.Embedding(self.n_node,self.hidden_size)
 
         self.gnn = GNN(self.hidden_size, step=opt.step)
-
-        # --- GLOBAL (CROSS-SESSION) GRAPH ---
-        self.use_global_graph = global_neighbor_idx is not None
-        if self.use_global_graph:
-            self.register_buffer('global_neighbor_idx', global_neighbor_idx)
-            self.register_buffer('global_neighbor_weight', global_neighbor_weight)
-        else:
-            # zero-weight self-loop fallback: every item's only "neighbor" is
-            # itself with weight 0, so GlobalAggregator returns a zero vector
-            # and GatedFusion degenerates to passing h_local through.
-            self.register_buffer('global_neighbor_idx', torch.zeros((n_node, 1), dtype=torch.long))
-            self.register_buffer('global_neighbor_weight', torch.zeros((n_node, 1), dtype=torch.float))
-        self.global_aggregator = GlobalAggregator(self.hidden_size, dropout_rate=getattr(opt, 'dropout', 0.1))
-        self.fusion_gate = GatedFusion(self.hidden_size)
-
         self.attention = AttentionModule(self.hidden_size)
         self.loss_function = nn.CrossEntropyLoss()
         self.optimizer = torch.optim.Adam(self.parameters(), lr=opt.lr, weight_decay=opt.l2)
@@ -174,28 +153,14 @@ class SessionGraph(Module):
         stdv = 1.0 / math.sqrt(self.hidden_size)
         for weight in self.parameters():
             weight.data.uniform_(-stdv, stdv)
-
+            
     def compute_scores(self, hidden, mask):
-        item_embeddings = self.fusion_layer.id_embedding.weight[1:]
+        item_embeddings = self.embedding.weight[1:]
         session_repr = self.attention(hidden,mask,item_embeddings)
         scores = torch.sum(session_repr*item_embeddings,-1)
         return scores
 
     def forward(self, inputs, A):
-        batch_img_feats = self.item_image_features[inputs]
-        hidden = self.fusion_layer(inputs, batch_img_feats)   # initial per-item embeddings [B, N, D]
-
-        # Local: session-graph propagation (unchanged from before)
-        h_local = self.gnn(A, hidden)
-
-        # Global: cross-session co-occurrence graph, attention-aggregated
-        h_global = self.global_aggregator(
-            inputs,
-            self.fusion_layer.id_embedding.weight,
-            self.global_neighbor_idx,
-            self.global_neighbor_weight,
-        )
-
-        # Fuse local + global node-wise before handing off to the attention module
-        hidden = self.fusion_gate(h_local, h_global)
+        hidden = self.embedding(inputs)
+        hidden = self.gnn(A, hidden)
         return hidden

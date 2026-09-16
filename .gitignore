@@ -6,3 +6,8 @@ include/
 *.gz
 *.dylib
 .DS_Store
+
+__pycache__/
+*.py[cod]
+
+dataset/
