@@ -46,7 +46,7 @@ def extract_and_save_features():
     model.eval()
 
     # --- UPDATED PATH ---
-    mapping_path = 'data/amazon_beauty/id2asin.json'
+    mapping_path = 'dataset/amazon_beauty/id2asin.json'
     if not os.path.exists(mapping_path):
         raise FileNotFoundError(f"Cannot find {mapping_path}. Run train.py first to generate the dictionary!")
         
@@ -104,7 +104,7 @@ def extract_and_save_features():
         feature_matrix[idx] = tensor
 
     # --- UPDATED PATH ---
-    save_path = 'data/amazon_beauty/item_image_features.pt'
+    save_path = 'dataset/amazon_beauty/item_image_features.pt'
     torch.save(feature_matrix, save_path)
     print(f"\nSuccessfully saved feature matrix of shape {feature_matrix.shape} to {save_path}")
 
